@@ -1,0 +1,381 @@
+/* CuddleBed · carrito compartido (portada y página /carrito/).
+   Se guarda en el navegador del cliente (localStorage). Es almacenamiento
+   técnico que el cliente pide al añadir productos: no necesita consentimiento. */
+(function () {
+  "use strict";
+
+  // Precios con IVA. DEBEN coincidir con los de api/checkout.php (que es el que cobra).
+  const PRECIOS = { "40": 24.95, "50": 29.95, "60": 34.95, "70": 39.95 };
+  const PESOS = { "40": "hasta 4 kg", "50": "hasta 7 kg", "60": "hasta 12 kg", "70": "hasta 18 kg" };
+  const COLORES = { rosa: "Rosa", marron: "Marrón", gris: "Gris" };
+  const MAX_UNIDADES = 10;
+  const CLAVE = "cuddlebed-carrito";
+
+  const euros = (n) => n.toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
+
+  function leer() {
+    try {
+      const datos = JSON.parse(localStorage.getItem(CLAVE) || "[]");
+      // Solo se aceptan variantes que existen, por si el almacenamiento trae algo raro.
+      return Array.isArray(datos)
+        ? datos.filter((l) => PRECIOS[l.talla] && COLORES[l.color] && l.cantidad >= 1)
+               .map((l) => ({ talla: l.talla, color: l.color, cantidad: Math.min(MAX_UNIDADES, Math.floor(l.cantidad)) }))
+        : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function guardar(lineas) {
+    try { localStorage.setItem(CLAVE, JSON.stringify(lineas)); } catch (e) { /* modo privado: el carrito dura lo que la página */ }
+    memoria = lineas;
+    pintarContador();
+    document.dispatchEvent(new CustomEvent("carrito:cambio"));
+  }
+
+  let memoria = leer();
+  const lineas = () => memoria;
+
+  function anadir(talla, color, cantidad) {
+    const l = memoria.map((x) => ({ ...x }));
+    const existente = l.find((x) => x.talla === talla && x.color === color);
+    if (existente) existente.cantidad = Math.min(MAX_UNIDADES, existente.cantidad + cantidad);
+    else l.push({ talla, color, cantidad: Math.min(MAX_UNIDADES, cantidad) });
+    guardar(l);
+  }
+
+  function cambiar(indice, cantidad) {
+    const l = memoria.map((x) => ({ ...x }));
+    if (cantidad < 1) l.splice(indice, 1);
+    else l[indice].cantidad = Math.min(MAX_UNIDADES, cantidad);
+    guardar(l);
+  }
+
+  const vaciar = () => guardar([]);
+  const unidades = () => memoria.reduce((s, l) => s + l.cantidad, 0);
+  const total = () => memoria.reduce((s, l) => s + PRECIOS[l.talla] * l.cantidad, 0);
+
+  function pintarContador() {
+    const n = unidades();
+    document.querySelectorAll("[data-contador]").forEach((el) => {
+      el.textContent = n;
+      el.hidden = n === 0;
+    });
+    document.querySelectorAll(".icono-carrito").forEach((a) => a.setAttribute("aria-label", n ? `Ver carrito (${n} ${n === 1 ? "cama" : "camas"})` : "Ver carrito"));
+  }
+
+  window.Carrito = { PRECIOS, PESOS, COLORES, MAX_UNIDADES, euros, lineas, anadir, cambiar, vaciar, unidades, total };
+  pintarContador();/* CuddleBed · página /carrito/ */
+(function () {
+  "use strict";
+  const C = window.Carrito;
+  const EMAIL = "cridoga2009@gmail.com";
+  const $ = (s) => document.querySelector(s);
+  const lista = $("#lineas");
+  const plantilla = $("#plantilla-linea");
+  const mensaje = $("#mensaje-pago");
+  const boton = $("#finalizar");
+
+  function pintar() {
+    const lineas = C.lineas();
+    $("#carrito-lleno").hidden = lineas.length === 0;
+    $("#carrito-vacio").hidden = lineas.length > 0;
+    lista.textContent = "";
+    lineas.forEach((l, i) => {
+      const li = plantilla.content.firstElementChild.cloneNode(true);
+      const nombre = `Cama donut ${C.COLORES[l.color]}`;
+      const img = li.querySelector("img");
+      img.src = `/media/producto-${l.color}-640.webp`;
+      img.alt = `Cama donut color ${C.COLORES[l.color].toLowerCase()}`;
+      li.querySelector("h3").textContent = nombre;
+      li.querySelector(".linea-detalle").textContent = `${l.talla} cm · ${C.PESOS[l.talla]} · ${C.euros(C.PRECIOS[l.talla])}/ud.`;
+      li.querySelector(".cantidad").setAttribute("aria-label", `Cantidad de ${nombre} ${l.talla} cm`);
+      li.querySelector(".cantidad-valor").textContent = l.cantidad;
+      const [menos, mas] = li.querySelectorAll("[data-delta]");
+      menos.setAttribute("aria-label", "Quitar una");
+      mas.setAttribute("aria-label", "Añadir una");
+      mas.disabled = l.cantidad >= C.MAX_UNIDADES;
+      menos.addEventListener("click", () => C.cambiar(i, l.cantidad - 1));
+      mas.addEventListener("click", () => C.cambiar(i, l.cantidad + 1));
+      li.querySelector(".quitar").addEventListener("click", () => C.cambiar(i, 0));
+      li.querySelector(".quitar").setAttribute("aria-label", `Quitar ${nombre} ${l.talla} cm del carrito`);
+      li.querySelector(".linea-precio").textContent = C.euros(C.PRECIOS[l.talla] * l.cantidad);
+      lista.appendChild(li);
+    });
+    const total = C.euros(C.total());
+    $("#subtotal").textContent = total;
+    $("#total").textContent = total;
+  }
+
+  function pedidoPorEmail(motivo) {
+    const resumen = C.lineas().map((l) => `- ${l.cantidad} x Cama donut ${C.COLORES[l.color]} ${l.talla} cm`).join("\n");
+    const cuerpo = encodeURIComponent(`Hola, quiero hacer este pedido:\n${resumen}\nTotal: ${C.euros(C.total())}\n\nMi nombre:\nDirección de envío:\nTeléfono:`);
+    mensaje.innerHTML = `${motivo} Puedes hacer el pedido por email y te respondemos en 1-2 días laborables: ` +
+      `<a href="mailto:${EMAIL}?subject=${encodeURIComponent("Pedido CuddleBed")}&body=${cuerpo}">enviar mi pedido a ${EMAIL}</a>`;
+    mensaje.hidden = false;
+  }
+
+  boton.addEventListener("click", async () => {
+    mensaje.hidden = true;
+    boton.disabled = true;
+    const texto = boton.textContent;
+    boton.textContent = "Conectando con el pago seguro…";
+    try {
+      const r = await fetch("/api/checkout.php", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lineas: C.lineas() }),
+      });
+      const datos = await r.json().catch(() => ({}));
+      if (r.ok && datos.url) {
+        window.location.href = datos.url;
+        return;
+      }
+      pedidoPorEmail(datos.error || "No hemos podido abrir el pago.");
+    } catch (e) {
+      pedidoPorEmail("No hemos podido conectar con el pago.");
+    }
+    boton.disabled = false;
+    boton.textContent = texto;
+  });
+
+  document.addEventListener("carrito:cambio", pintar);
+  pintar();
+})();
+
+  // Si el carrito cambia en otra pestaña, se actualiza aquí también.
+  window.addEventListener("storage", (e) => { if (e.key === CLAVE) { memoria = leer(); pintarContador(); document.dispatchEvent(new CustomEvent("carrito:cambio")); } });
+})();
+/* CuddleBed · lógica de la landing (sin dependencias) */
+(function () {
+  "use strict";
+  document.documentElement.classList.add("js");
+
+  const { PRECIOS, COLORES: NOMBRES_COLOR, MAX_UNIDADES, euros } = window.Carrito;
+  const $ = (s, c = document) => c.querySelector(s);
+  const $$ = (s, c = document) => Array.from(c.querySelectorAll(s));
+  const reducirMovimiento = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- Galería ---------- */
+  const escenario = $("#escenario");
+  const miniaturas = $$(".miniaturas button");
+  const videoHeroe = $("#video-heroe");
+
+  function irA(id) {
+    const diapo = $(`[data-diapo="${id}"]`, escenario);
+    if (!diapo) return;
+    escenario.scrollTo({ left: diapo.offsetLeft, behavior: reducirMovimiento ? "auto" : "smooth" });
+    marcarMiniatura(id);
+  }
+
+  function marcarMiniatura(id) {
+    miniaturas.forEach((b) => {
+      const activa = b.dataset.ir === id;
+      b.setAttribute("aria-current", activa ? "true" : "false");
+      if (activa) b.scrollIntoView({ block: "nearest", inline: "nearest", behavior: reducirMovimiento ? "auto" : "smooth" });
+    });
+  }
+
+  miniaturas.forEach((b) => b.addEventListener("click", () => irA(b.dataset.ir)));
+
+  // Al deslizar con el dedo, se actualiza la miniatura activa.
+  let tempo;
+  escenario.addEventListener("scroll", () => {
+    clearTimeout(tempo);
+    tempo = setTimeout(() => {
+      const i = Math.round(escenario.scrollLeft / escenario.clientWidth);
+      const diapo = escenario.children[i];
+      if (diapo) marcarMiniatura(diapo.dataset.diapo);
+    }, 80);
+  }, { passive: true });
+
+  escenario.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    e.preventDefault();
+    const i = Math.round(escenario.scrollLeft / escenario.clientWidth) + (e.key === "ArrowRight" ? 1 : -1);
+    const diapo = escenario.children[Math.max(0, Math.min(i, escenario.children.length - 1))];
+    irA(diapo.dataset.diapo);
+  });
+
+  // Con movimiento reducido, solo el póster.
+  if (reducirMovimiento) {
+    $$("video").forEach((v) => { v.removeAttribute("autoplay"); v.pause(); });
+  }
+
+  /* ---------- Variantes y carrito ---------- */
+  const form = $("#form-compra");
+  const barra = $("#barra-movil");
+  const campoCantidad = $("#cantidad");
+  const aviso = $("#aviso-carrito");
+
+  function cantidadActual() {
+    const n = Math.floor(Number(campoCantidad.value));
+    return Math.min(MAX_UNIDADES, Math.max(1, Number.isFinite(n) ? n : 1));
+  }
+
+  function varianteActual() {
+    const talla = $('input[name="talla"]:checked', form).value;
+    const color = $('input[name="color"]:checked', form).value;
+    return { talla, color, clave: `${talla}-${color}`, precio: PRECIOS[talla] };
+  }
+
+  function pintarVariante() {
+    const v = varianteActual();
+    const precio = euros(v.precio);
+    $("#precio").textContent = precio;
+    $$("[data-precio]").forEach((el) => (el.textContent = euros(v.precio * (el.closest("#boton-comprar") ? cantidadActual() : 1))));
+    $("#nombre-color").textContent = NOMBRES_COLOR[v.color];
+    $("#nombre-talla").textContent = `${v.talla} cm`;
+    $("#barra-variante").textContent = `${NOMBRES_COLOR[v.color]} · ${v.talla} cm`;
+    $("#boton-comprar").dataset.variante = v.clave;
+  }
+
+  form.addEventListener("change", pintarVariante);
+  form.addEventListener("input", (e) => { if (e.target === campoCantidad) pintarVariante(); });
+  campoCantidad.addEventListener("blur", () => { campoCantidad.value = cantidadActual(); pintarVariante(); });
+  $$("[data-cantidad]", form).forEach((b) => b.addEventListener("click", () => {
+    campoCantidad.value = Math.min(MAX_UNIDADES, Math.max(1, cantidadActual() + Number(b.dataset.cantidad)));
+    pintarVariante();
+  }));
+  // "click" y no "change": así también se ve la foto al pulsar el color ya elegido.
+  $$('input[name="color"]', form).forEach((r) => r.addEventListener("click", () => irA(`producto-${r.value}`)));
+
+  let ocultarAviso;
+  function anadirAlCarrito() {
+    const v = varianteActual();
+    const n = cantidadActual();
+    window.Carrito.anadir(v.talla, v.color, n);
+    $("#aviso-texto").textContent = `${n === 1 ? "Añadida" : n + " añadidas"} al carrito: ${NOMBRES_COLOR[v.color]} · ${v.talla} cm`;
+    aviso.hidden = false;
+    clearTimeout(ocultarAviso);
+    ocultarAviso = setTimeout(() => { aviso.hidden = true; }, 12000);
+  }
+
+  form.addEventListener("submit", (e) => { e.preventDefault(); anadirAlCarrito(); });
+  $("#barra-comprar").addEventListener("click", () => {
+    anadirAlCarrito();
+    $("#titulo-producto").scrollIntoView({ behavior: reducirMovimiento ? "auto" : "smooth" });
+  });
+
+  pintarVariante();
+
+  /* ---------- Carrusel: pausa (accesibilidad) ---------- */
+  const pausa = $("#carrusel-pausa");
+  if (pausa) {
+    const cinta = $(".carrusel-cinta");
+    pausa.addEventListener("click", () => {
+      const parado = cinta.classList.toggle("parado");
+      pausa.setAttribute("aria-pressed", parado ? "true" : "false");
+      pausa.textContent = parado ? "Reanudar" : "Pausar";
+    });
+  }
+
+  /* ---------- Flechas de la galería ---------- */
+  $$("[data-mover]").forEach((b) => b.addEventListener("click", () => {
+    const n = escenario.children.length;
+    const i = (Math.round(escenario.scrollLeft / escenario.clientWidth) + Number(b.dataset.mover) + n) % n;
+    irA(escenario.children[i].dataset.diapo);
+  }));
+
+  /* ---------- Fecha estimada de entrega (5-8 días laborables, sin contar festivos) ---------- */
+  function sumarLaborables(fecha, dias) {
+    const d = new Date(fecha);
+    while (dias > 0) {
+      d.setDate(d.getDate() + 1);
+      if (d.getDay() !== 0 && d.getDay() !== 6) dias--;
+    }
+    return d;
+  }
+  const fmt = (d) => d.toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short" });
+  const hoy = new Date();
+  $("#entrega span").innerHTML = `Envío gratis · recíbela entre el <strong>${fmt(sumarLaborables(hoy, 5))}</strong> y el <strong>${fmt(sumarLaborables(hoy, 8))}</strong> (estimado)`;
+
+  /* ---------- Sombra de la cabecera al hacer scroll ---------- */
+  const cabecera = $("#cabecera");
+  const sombra = () => cabecera.classList.toggle("con-sombra", window.scrollY > 40);
+  window.addEventListener("scroll", sombra, { passive: true });
+  sombra();
+
+  /* ---------- Barra fija móvil: aparece al pasar el botón de compra ---------- */
+  if ("IntersectionObserver" in window) {
+    const final = $(".final");
+    let pasadoBoton = false, enFinal = false;
+    const actualizar = () => {
+      const ver = pasadoBoton && !enFinal;
+      barra.classList.toggle("visible", ver);
+      barra.setAttribute("aria-hidden", ver ? "false" : "true");
+      $("#barra-comprar").tabIndex = ver ? 0 : -1;
+    };
+    new IntersectionObserver(([e]) => {
+      pasadoBoton = !e.isIntersecting && e.boundingClientRect.top < 0;
+      actualizar();
+    }).observe($("#boton-comprar"));
+    new IntersectionObserver(([e]) => { enFinal = e.isIntersecting; actualizar(); }, { threshold: 0.3 }).observe(final);
+  }
+
+  /* ---------- Calculadora de tallas ---------- */
+  const LIMITES = [[4, "40"], [7, "50"], [12, "60"], [18, "70"]];
+  $("#calculadora").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const salida = $("#resultado-talla");
+    const peso = parseFloat(String($("#peso").value).replace(",", "."));
+    if (!peso || peso <= 0) { salida.textContent = "Escribe el peso en kilos, por ejemplo 9."; return; }
+    let i = LIMITES.findIndex(([max]) => peso <= max);
+    if (i === -1) {
+      salida.textContent = "Para más de 18 kg nuestra talla mayor (70 cm) se le quedará justa. Si le gusta dormir enroscado puede valer, pero no podrá estirarse dentro.";
+      return;
+    }
+    if ($("#estirado").checked && i < LIMITES.length - 1) i += 1;
+    const talla = LIMITES[i][1];
+    salida.innerHTML = `Te recomendamos <strong>${talla} cm</strong> (${euros(PRECIOS[talla])}). <button type="button" data-elegir="${talla}">Elegir esta talla</button>`;
+  });
+  $("#resultado-talla").addEventListener("click", (e) => {
+    const talla = e.target.dataset && e.target.dataset.elegir;
+    if (!talla) return;
+    const radio = $(`input[name="talla"][value="${talla}"]`, form);
+    radio.checked = true;
+    pintarVariante();
+    $("#titulo-producto").scrollIntoView({ behavior: reducirMovimiento ? "auto" : "smooth" });
+    radio.focus({ preventScroll: true });
+  });
+
+  /* ---------- Entrada suave de secciones y vídeo perezoso ---------- */
+  if ("IntersectionObserver" in window && !reducirMovimiento) {
+    const io = new IntersectionObserver((entradas) => {
+      entradas.forEach((en) => { if (en.isIntersecting) { en.target.classList.add("visto"); io.unobserve(en.target); } });
+    }, { rootMargin: "0px 0px -10% 0px" });
+    $$(".revelar").forEach((el) => io.observe(el));
+
+    const perezosos = new IntersectionObserver((entradas) => {
+      entradas.forEach((en) => {
+        if (!en.isIntersecting) return;
+        const v = en.target;
+        $$("source[data-src]", v).forEach((s) => (s.src = s.dataset.src));
+        v.load();
+        v.play().catch(() => {});
+        perezosos.unobserve(v);
+      });
+    }, { rootMargin: "200px" });
+    $$("video[data-perezoso]").forEach((v) => perezosos.observe(v));
+  } else {
+    $$(".revelar").forEach((el) => el.classList.add("visto"));
+  }
+
+  /* =========================================================
+     PÍXELES DE PUBLICIDAD (desactivados)
+     ---------------------------------------------------------
+     Si activas Meta Pixel o TikTok Pixel, la ley exige un banner
+     de cookies donde rechazar sea igual de fácil que aceptar, y
+     actualizar /cookies/. Carga los píxeles SOLO dentro de
+     cargarPixeles(), llamada tras el consentimiento.
+
+     function cargarPixeles() {
+       // Meta Pixel: pega aquí el código base con tu ID
+       // !function(f,b,e,v,n,t,s){...}(window, document,'script','https://connect.facebook.net/en_US/fbevents.js');
+       // fbq('init', 'TU_ID_META'); fbq('track', 'PageView');
+
+       // TikTok Pixel: pega aquí el código base con tu ID
+       // ttq.load('TU_ID_TIKTOK'); ttq.page();
+     }
+     ========================================================= */
+})();
